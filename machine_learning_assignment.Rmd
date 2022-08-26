@@ -1,0 +1,148 @@
+---
+title: "Machine Learning Assignment"
+author: "Juana AM"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Project information
+
+The goal of this project is to predict how well a weight-lifting exercise is performed. I will be using collected data from accelerometers on the belt, forearm, arm, and dumbbell of 6 participants. The participants were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website: <http://groupware.les.inf.puc-rio.br/har>.
+
+## Data
+
+Firstly I will import the packages I will be using in the process, download the provided data, open it in R and check its structure.
+
+```{r packages and data, echo=TRUE, results=FALSE, warning=FALSE, message=FALSE}
+##read packages
+library(dplyr)
+library(caret)
+library(lubridate)
+
+##download files and open files
+if(!file.exists("pml-training.csv")){download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", destfile = "~/pml-training.csv")}
+if(!file.exists("pml-testing.csv")){download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", destfile = "~/pml-testing.csv")}
+training = read.csv("pml-training.csv")
+testing = read.csv("pml-testing.csv")
+str(training)
+str(testing)
+```
+
+```{r dim str, echo=TRUE}
+dim(training)
+dim(testing)
+```
+
+The variable classe is the last one in the data set, it takes 1 of 5 letters (A,B,C,D or E), A represents the correct execution of the monitored movement, while the other four letter are incorrect variations, this variable will be the outcome variable.
+
+## Preprocessing
+
+For this project we need to predict only based in the sensors activity, since we expect the obtained model to predict the performance of the movement on different subjects, the first 7 variables are then removed as those are not information detected by the sensors.
+
+```{r subset data, echo=TRUE, results=FALSE, warning=FALSE, message=FALSE}
+##setting variables format and deleting unnecessary variables
+training$classe <-as.factor(training$classe)
+subset_train<-as.data.frame(apply(training[,8:(dim(training)[2]-1)],2,as.numeric))
+```
+
+In the next step I check for the missing values, we can see many variables have missing values and all of them have more then 19.000, those will not be consider in the model, since the data provided by those is not helpful.
+
+```{r delete NA, echo=TRUE, warning=FALSE, message=FALSE}
+##checking for NA
+table(apply(subset_train,2, function(x) anyNA(x)))
+unique(apply(subset_train,2, function(x) sum(is.na(x))))
+
+##Deleting variable with mostly NA values
+noNATrain<-subset_train[,which(apply(subset_train,2, function(x) sum(is.na(x)))<19000)]
+dim(noNATrain)
+```
+
+In order to reduce our data set I will delete high correlated variables, removing those does not remove relevant information but can improve the training and make it faster. Additionally, I checked if there were zero variance variables but I didn't find any, so I did not make any change in the data set after this step.
+
+```{r correlated variables, echo=TRUE}
+##correlated variables
+M<-abs(cor(noNATrain))
+diag(M)<-0
+M[upper.tri(M)] <- 0
+train_new <- noNATrain[,!apply(M,2,function(x) any(abs(x) > 0.8))]
+train_new$classe<-training$classe
+
+##see remaining variables
+names(train_new)
+
+##checking zero variance variables
+nzv<-nearZeroVar(train_new,saveMetrics = TRUE)
+```
+
+## Training models
+
+I used the train function from the caret package to train 6 models using: classification tree, bagging, random forest, boosting, linear discriminant analysis and naive Bayes. I used 10 cross validation in all of them to reduce biased and get a more accurate estimate of out-of-sample error.
+
+```{r training, echo=TRUE, results=FALSE, warning=FALSE, message=FALSE}
+##setting cross validation as train control
+ctrl<-trainControl(method="cv", number=10)
+
+##model with classification tree, bagging, random forest, boosting, linear discriminant analysis and naive Bayes.
+fit_rpart<-train(classe~.,train_new, method="rpart", preProcess= c("center","scale"),trControl = ctrl)
+fit_bag<-train(classe~.,train_new, method="bagFDA", preProcess= c("center","scale"),trControl = ctrl)
+fit_rf<-train(classe~.,train_new, method="rf", preProcess= c("center","scale"),trControl = ctrl)
+fit_gbm<-train(classe~.,train_new, method="gbm", preProcess= c("center","scale"),trControl = ctrl,verbose=FALSE)
+fit_lda<-train(classe~.,train_new, method="lda", preProcess= c("center","scale"),trControl = ctrl)
+fit_nb<-train(classe~.,train_new, method="nb", preProcess= c("center","scale"),trControl = ctrl)
+```
+
+Next I check for accuracy in the models.
+
+```{r accuraccy, echo=TRUE}
+##checking every model accuracy
+fit_rpart$results
+fit_bag$results
+fit_rf$results
+fit_gbm$results
+fit_lda$results
+fit_nb$results
+```
+
+The most accurate model is the one obtained using random forest with an accuracy of 0.9941389. Next we can see the final model and the importance of variables according to mean decreased Gini score.
+
+```{r see random forest model, echo=TRUE}
+fit_rf$finalModel
+
+#plot importance in variable
+importance<-data.frame(fit_rf$finalModel$importance)
+importance$variable<-row.names(importance)
+ggplot(importance, aes(x = MeanDecreaseGini, y = reorder(variable,MeanDecreaseGini))) + geom_col() + ylab("Variable") + xlab("Mean Decrease Gini")
+```
+
+We can see the random forest model has an OOB estimate of error rate of 0.53%, this values should be similar to the out of sample error.
+
+## Testing data
+
+In the next chuck I preprocess the test data same way I preprocessed train data before, this data file does not include a classe variable, it has a the variable object_id instead, I will predict the class using the model.
+
+```{r preprocess test data, echo=TRUE}
+##setting variables format and deleting unnecessary variables
+subset_test<-as.data.frame(apply(testing[,8:dim(testing)[2]],2,as.numeric))
+
+##Deleting variable with mostly NA values
+noNATest<-subset_test[,which(apply(subset_test,2, function(x) sum(is.na(x)))<20)]
+
+##correlated variables
+test_new <- noNATest[,!apply(M,2,function(x) any(abs(x) > 0.8))]
+test_new$problem_id<-as.factor(testing$problem_id)
+dim(test_new)
+```
+
+## Predictions
+
+Finally I will predict the execution of the movement in the 20 cases included in the test data set, for this we will use the random forest model.
+
+```{r predictions, echo=TRUE}
+##predicting testing data
+pred_test_rf<-predict(fit_rf,test_new)
+data.frame(prediction=pred_test_rf,problem_id=test_new$problem_id)
+```
